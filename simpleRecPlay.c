@@ -36,6 +36,33 @@
 #define FORMAT AUDIO_U16		/* Format of each sample (signed, unsigned, 8,16 bits, int/float, ...) */
 #define ABUFSIZE_SAMPLES 4096	/* Audio buffer size in sample FRAMES (total samples divided by channel count) */
 
+
+// NOTE - Struct e inicialização do double buffer
+
+// Estrutura dos novos buffers
+typedef struct {	
+	int16_t data[ABUFSIZE_SAMPLES]; // 4096 amostras por buffer
+	volatile int full; 				// volatile para sincronização segura do valor entre threads
+} AudioBuf;
+
+// static - variavel global visivel apenas dentro deste .c
+// Inicialização dos buffers
+
+// .full = 0 inicializa a var full do buffer respetivo a zero
+// data é inicializado todo a zero automaticamente porque é o padrao das variaveis estaticas em C
+// full tambem seria inicializado a zero mas decidi colocar porque é uma flag de controlo e por isso achei que deveria ficar explicito
+static AudioBuf bufA = { .full = 0 }; 
+static AudioBuf bufB = { .full = 0 };
+// Ponteiro para o buffer que esta a receber amostras
+// Vai ser a partir do curBuf que vamos aceder aos dados curBuf->data[i]
+// Nao a partir dos buffers diretamente
+// Este ponteiro irá mudar o buffer apontado quando o current buffer estiver cheio
+// Isto é, quando encher o buffer atual de amostras novas
+// A ideia é que o tempo de recolha de amostras seja sempre inferior
+// ao tempo de processamento das amostras no outro buffer para que não se perca informação
+static AudioBuf *curBuf = &bufA;
+
+
 const int MAX_RECORDING_DEVICES = 10;		/* Maximum allowed number of souns devices that will be detected */
 
 //Maximum recording time
@@ -75,11 +102,40 @@ char y;
  * **************************************************************/
 void audioRecordingCallback(void* userdata, Uint8* stream, int len )
 {
+	// REVIEW - Recolha de amostras para o buffer antigo depois
+	// deve ser retirada 
+
 	/* Copy bytes acquired from audio stream */
 	memcpy(&gRecordingBuffer[ gBufferBytePosition ], stream, len);
 
 	/* Update buffer pointer */
 	gBufferBytePosition += len;
+
+
+	// NOTE - Recolher os dados para os buffers A e B e ir alternando
+	// Através do curBuf
+
+	// Determinação do número exato de bytes a copiar
+	int expected_bytes = sizeof(curBuf->data);
+	int tocopy = (len < expected_bytes) ? len : expected_bytes;
+
+	// Copia dos dados para o current Buffer
+	if (!curBuf->full) {
+		// cast para o memcpy interpretar o inicio do array data como ponteiro para bytes
+		// Pois ele espera um ponteiro para bytes
+		memcpy((Uint8*)curBuf->data, stream, tocopy);
+		// REVIEW - estamos a considerar full quando len < expected_bytes
+		// Não é correto, devemos alterar mais à frente
+		curBuf->full = 1;
+		// Efetuar a troca de buffer
+		curBuf = (curBuf == &bufA) ? &bufB : &bufA;
+	}
+
+	/*NOTE - Ate agora no que implementamos, ainda não temos codigo 
+	para esvaziar os buffers. Portanto teoricamente ele vai aceder 
+	ao 1º buffer, echer, depois ao 2º, encher, e depois vai dropar todos 
+	os blocos a partir de ai pois nao temos maneira de os esvaziar implementada ainda*/
+
 }
 
 /* *********************************************************************************** 
@@ -435,6 +491,21 @@ int main(int argc, char ** argv)
 
 		/* Buffer not yet full? Keep trying ... */
 		SDL_UnlockAudioDevice( recordingDeviceId );
+
+		// REVIEW - Esta parte é para retirar
+		// Era apenas para ver se o double buffer estava funcional
+		// do ponto de vista de recolha das amostras e alternancia
+		// NOTE - teste temporário
+		// Simular o comportamento de consumo dos buffers A e B
+		// Para verificar se eles de facto ficam cheios alternadamente
+		if (bufA.full) {
+			printf("[BUF] Buffer A cheio\n");
+			bufA.full = 0;	// simula processamento dos dados
+		}
+		if (bufB.full) {
+			printf("[BUF] Buffer B cheio\n");
+			bufB.full = 0;
+		}
 	}
 
 	/* *****************************************************************
