@@ -26,6 +26,15 @@
 #include <math.h>
 #include <complex.h>
 #include "fft/fft.h"
+#include "pthread.h"
+
+// NOTE - Thread
+// Criar variavel para guardar o identificador da thread
+static pthread_t dispatcher_th;
+// Variável de controlo do estado da thread
+static volatile int dispatcher_run = 1;
+// variavel que determina o criterio de paragem de gravação
+static volatile int blocksdispatched = 0;
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -61,6 +70,10 @@ static AudioBuf bufB = { .full = 0 };
 // A ideia é que o tempo de recolha de amostras seja sempre inferior
 // ao tempo de processamento das amostras no outro buffer para que não se perca informação
 static AudioBuf *curBuf = &bufA;
+
+// Variável para tornar o audio device acessivel a outras threads
+// Nao apenas ao main. Depois no main fazemos gRecDev = recordingDeviceId
+static SDL_AudioDeviceID gRecDev = 0;
 
 
 const int MAX_RECORDING_DEVICES = 10;		/* Maximum allowed number of souns devices that will be detected */
@@ -102,14 +115,14 @@ char y;
  * **************************************************************/
 void audioRecordingCallback(void* userdata, Uint8* stream, int len )
 {
-	// REVIEW - Recolha de amostras para o buffer antigo depois
-	// deve ser retirada 
+	// NOTE - Recolha de amostras para o buffer antigo 
+	// Foi retirada pois agora recolhemos as amostras para o double buffer 
 
 	/* Copy bytes acquired from audio stream */
-	memcpy(&gRecordingBuffer[ gBufferBytePosition ], stream, len);
+	//memcpy(&gRecordingBuffer[ gBufferBytePosition ], stream, len);
 
 	/* Update buffer pointer */
-	gBufferBytePosition += len;
+	//gBufferBytePosition += len;
 
 
 	// NOTE - Recolher os dados para os buffers A e B e ir alternando
@@ -326,6 +339,39 @@ void getMaxMinU16(uint8_t * buffer, uint32_t nSamples, uint32_t * max, uint32_t 
 	return;	
 }
 
+// NOTE - Thread Dispatcher function
+// Lock e Unlock para evitar race condicions com a callback
+void* dispatcher_loop(void* arg) {
+	while(dispatcher_run) {
+
+		// Variavel que verifica se buf foi consumido nesta iteração
+		int consumed = 0;
+
+		// Temos de bloquear porque vamos mexer nos buffers
+		SDL_LockAudioDevice(gRecDev);
+
+		if (bufA.full) {
+			// TODO - AquiEnt no futuro vamos copiar para filas por tarefa
+			bufA.full = 0;
+			blocksdispatched++;
+			consumed = 1;
+			printf("[DISPATCH] Consumi A (total=%d)\n", blocksdispatched);
+
+		} else if (bufB.full) {
+			bufB.full = 0;
+			blocksdispatched++;
+			consumed = 1;
+			printf("[DISPATCH] Consumi B (total=%d)\n", blocksdispatched);
+		}
+
+		SDL_UnlockAudioDevice(gRecDev);
+
+		if (!consumed) {
+			SDL_Delay(2); // caso n tenha encontrado nenhum full buf - sleep 2ms para n estar sempre a consumir cpu
+		}
+	}
+	return NULL;
+}
 
 /* ***************************************
  * Main 
@@ -399,6 +445,8 @@ int main(int argc, char ** argv)
 	/* and open it */
 	recordingDeviceId = SDL_OpenAudioDevice(SDL_GetAudioDeviceName(index, SDL_TRUE), SDL_TRUE, &desiredRecordingSpec, &gReceivedRecordingSpec, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
 
+	gRecDev = recordingDeviceId;
+
 	/* if device failed to open terminate */
 	if(recordingDeviceId == 0)
 	{
@@ -469,11 +517,17 @@ int main(int argc, char ** argv)
 	
 	/* Set index to the beginning of buffer */
 	gBufferBytePosition = 0;
+	
+	// NOTE - Criar a thread do dispacher antes de começar a gravar
+	if (pthread_create(&dispatcher_th, NULL, dispatcher_loop, NULL) != 0) {
+		perror("pthread_create");
+		return 1;
+	}
 
 	/* After being open devices have callback processing blocked (paused_on active), to allow configuration without glitches */
 	/* Devices must be unpaused to allow callback processing */
 	SDL_PauseAudioDevice(recordingDeviceId, SDL_FALSE ); /* Args are SDL device id and pause_on */
-	
+
 	/* Wait until recording buffer full */
 	while(1)
 	{
@@ -481,13 +535,16 @@ int main(int argc, char ** argv)
 		SDL_LockAudioDevice(recordingDeviceId);
 
 		/* Receiving buffer full? */
-		if(gBufferBytePosition > gBufferByteMaxPosition)
+		if(blocksdispatched >= 50)
 		{
 			/* Stop recording audio */
 			SDL_PauseAudioDevice(recordingDeviceId, SDL_TRUE );
 			SDL_UnlockAudioDevice(recordingDeviceId );
 			break;
 		}
+		/*if (bufA.full || bufB.full) {
+			blocksRecorded++;
+		}*/
 
 		/* Buffer not yet full? Keep trying ... */
 		SDL_UnlockAudioDevice( recordingDeviceId );
@@ -498,14 +555,21 @@ int main(int argc, char ** argv)
 		// NOTE - teste temporário
 		// Simular o comportamento de consumo dos buffers A e B
 		// Para verificar se eles de facto ficam cheios alternadamente
-		if (bufA.full) {
+		/*if (bufA.full) {
 			printf("[BUF] Buffer A cheio\n");
 			bufA.full = 0;	// simula processamento dos dados
 		}
 		if (bufB.full) {
 			printf("[BUF] Buffer B cheio\n");
 			bufB.full = 0;
-		}
+		}*/
+	}
+
+	// NOTE - variavel de controlo da thread a zero termina a thread
+	// pthread join para esperar que a thread acabe em segurança
+	dispatcher_run = 0;
+	if (pthread_join(dispatcher_th, NULL) != 0) {
+		perror("pthread_join");
 	}
 
 	/* *****************************************************************
