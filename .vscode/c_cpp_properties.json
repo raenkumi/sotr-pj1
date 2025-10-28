@@ -6,7 +6,10 @@
                 "${workspaceFolder}/**",
                 "/usr/include/SDL2"
             ],
-            "defines": [],
+            "defines": [
+                "_POSIX_C_SOURCE=200809L",
+                "_GNU_SOURCE"
+            ],
             "compilerPath": "/usr/bin/clang",
             "cStandard": "c17",
             "cppStandard": "c++17",

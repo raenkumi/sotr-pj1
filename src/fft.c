@@ -65,10 +65,10 @@ void fftGetAmplitude(complex double * X, int N, int fs, float * fk, float * Ak) 
 	}
     
     /* Compute amplitudes */
-    Ak[0] = 1.0/N*cabsf(X[0]);
-    Ak[N/2] = 1.0/N*cabsf(X[N/2]);
+    Ak[0] = (float)(cabs(X[0])/ N);
+    Ak[N/2] = (float)(cabs(X[N/2]) / N);
     for(k=1; k<N/2; k++) {
-		Ak[k] = 2.0/N*cabsf(X[k]);
+		Ak[k] = (float)(2.0 * cabs(X[k]) / N);
 	}
 	
 //	 for(k=0; k<=N/2; k++) {	
